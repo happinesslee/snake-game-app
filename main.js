@@ -1,285 +1,281 @@
-// 게임 설정값
-const CELL = 20;                          // 셀 한 변의 픽셀 크기
-const COLS = 20;                          // 가로 칸 수 (400 / 20)
-const ROWS = 20;                          // 세로 칸 수 (400 / 20)
-const FOOD_SCORE = 10;                    // 먹이 하나당 점수
-const LEVEL_UP_SCORE = 50;                // 레벨업에 필요한 점수 간격
-const LEVEL_SPEED_STEP = 10;              // 레벨업 시 짧아지는 간격(ms) = 속도 상승
-const MIN_TICK_MS = 30;                   // 조작이 불가능해지지 않도록 하한선
-const BEST_SCORE_KEY = "snake-best-score";
+/**
+ * 스네이크 게임 (Snake Game) - 메인 자바스크립트
+ * 규칙: 400x400 캔버스, 20x20 격자, 방향키 조종, 먹이 섭취 시 +10점 및 몸길이 증가, 충돌 시 게임 오버, 최고점수 LocalStorage 저장
+ */
 
-const canvas = document.getElementById("board");
-const ctx = canvas.getContext("2d");
-const scoreEl = document.getElementById("score");
-const bestScoreEl = document.getElementById("best-score");
-const levelEl = document.getElementById("level");
-const difficultySelect = document.getElementById("difficulty");
-const pauseBtn = document.getElementById("pause-btn");
-const overlay = document.getElementById("overlay");
-const overlayTitle = document.getElementById("overlay-title");
-const overlayDesc = document.getElementById("overlay-desc");
-const startBtn = document.getElementById("start-btn");
+// 캔버스 및 콘텍스트 참조
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
 
-// 방향키 → 이동 벡터
-const DIRECTIONS = {
-  ArrowUp: { x: 0, y: -1 },
-  ArrowDown: { x: 0, y: 1 },
-  ArrowLeft: { x: -1, y: 0 },
-  ArrowRight: { x: 1, y: 0 },
-};
+// DOM 요소 참조
+const scoreEl = document.getElementById('score');
+const highScoreEl = document.getElementById('highScore');
+const finalScoreEl = document.getElementById('finalScore');
+const startOverlay = document.getElementById('startOverlay');
+const gameOverOverlay = document.getElementById('gameOverOverlay');
+const startBtn = document.getElementById('startBtn');
+const restartBtn = document.getElementById('restartBtn');
 
-let snake = [];             // 뱀의 몸통 좌표 (index 0 이 머리)
-let direction = { x: 1, y: 0 };
-let pendingDirection = { x: 1, y: 0 };   // 다음 틱에 반영할 방향
-let food = { x: 0, y: 0 };
+// 격자 및 게임 상수 (20x20 격자, 400x400 캔버스)
+const GRID_SIZE = 20;   // 한 타일의 크기 (20px)
+const TILE_COUNT = 20;  // 타일 개수 (20개 -> 20 * 20 = 400px)
+const GAME_SPEED = 110; // 게임 루프 속도 (ms)
+
+// 게임 상태 변수
+let snake = [];
+let food = { x: 15, y: 15 };
+let dx = 0;
+let dy = -1;
+let nextDx = 0;
+let nextDy = -1;
 let score = 0;
-let bestScore = 0;
-let level = 1;
-let isPlaying = false;
-let isPaused = false;
-let timerId = null;
+let highScore = 0;
+let gameInterval = null;
+let isRunning = false;
 
-// 최고 점수 읽기 (LocalStorage 가 막혀 있어도 게임은 동작하도록 처리)
-function loadBestScore() {
-  try {
-    const saved = Number(localStorage.getItem(BEST_SCORE_KEY));
-    return Number.isFinite(saved) && saved > 0 ? saved : 0;
-  } catch (error) {
-    return 0;
+// 최고 점수 LocalStorage에서 불러오기
+function loadHighScore() {
+  const saved = localStorage.getItem('snake_high_score');
+  highScore = saved ? parseInt(saved, 10) : 0;
+  highScoreEl.textContent = highScore;
+}
+
+// 최고 점수 저장하기
+function saveHighScore() {
+  if (score > highScore) {
+    highScore = score;
+    localStorage.setItem('snake_high_score', highScore);
+    highScoreEl.textContent = highScore;
   }
 }
 
-function saveBestScore(value) {
-  try {
-    localStorage.setItem(BEST_SCORE_KEY, String(value));
-  } catch (error) {
-    // 저장에 실패해도 진행에는 영향이 없으므로 무시
-  }
-}
-
-// 선택한 난이도의 기본 간격에서 레벨만큼 속도를 올린 값
-function currentTickMs() {
-  const base = Number(difficultySelect.value);
-  return Math.max(MIN_TICK_MS, base - (level - 1) * LEVEL_SPEED_STEP);
-}
-
-// 진행 중일 때만 현재 속도로 타이머를 다시 건다
-function applySpeed() {
-  clearInterval(timerId);
-  timerId = null;
-  if (isPlaying && !isPaused) {
-    timerId = setInterval(tick, currentTickMs());
-  }
-}
-
-// 뱀이 없는 빈 칸 중에서 무작위로 먹이 위치 선택
-function placeFood() {
-  const taken = new Set(snake.map((part) => `${part.x},${part.y}`));
-  const empty = [];
-
-  for (let y = 0; y < ROWS; y++) {
-    for (let x = 0; x < COLS; x++) {
-      if (!taken.has(`${x},${y}`)) empty.push({ x, y });
-    }
-  }
-
-  // 보드가 꽉 찼다면 더 놓을 자리가 없음
-  if (empty.length === 0) return;
-
-  food = empty[Math.floor(Math.random() * empty.length)];
-}
-
-// 뱀/점수/레벨/방향을 초기 상태로 되돌림
-function resetGame() {
-  const startY = Math.floor(ROWS / 2);
-  const startX = Math.floor(COLS / 2);
-
+// 게임 초기화
+function initGame() {
+  // 뱀 초기 위치 (중앙에 3칸)
   snake = [
-    { x: startX, y: startY },
-    { x: startX - 1, y: startY },
-    { x: startX - 2, y: startY },
+    { x: 10, y: 10 },
+    { x: 10, y: 11 },
+    { x: 10, y: 12 }
   ];
-  direction = { x: 1, y: 0 };
-  pendingDirection = { x: 1, y: 0 };
+
+  // 초기 이동 방향: 위쪽
+  dx = 0;
+  dy = -1;
+  nextDx = 0;
+  nextDy = -1;
+
   score = 0;
-  level = 1;
-  scoreEl.textContent = "0";
-  levelEl.textContent = "1";
-  placeFood();
-}
+  scoreEl.textContent = score;
 
-// 벽 밖으로 나갔거나 자기 몸에 부딪혔는지 확인
-function isCollision(head) {
-  if (head.x < 0 || head.x >= COLS || head.y < 0 || head.y >= ROWS) return true;
-  return snake.some((part) => part.x === head.x && part.y === head.y);
-}
-
-// 점수에 맞춰 레벨을 갱신하고, 올랐으면 속도를 다시 적용
-function updateLevel() {
-  const nextLevel = Math.floor(score / LEVEL_UP_SCORE) + 1;
-  if (nextLevel === level) return;
-
-  level = nextLevel;
-  levelEl.textContent = String(level);
-  applySpeed();
-}
-
-// 한 칸 이동 = 게임의 한 프레임
-function tick() {
-  direction = pendingDirection;
-
-  const head = {
-    x: snake[0].x + direction.x,
-    y: snake[0].y + direction.y,
-  };
-
-  // 꼬리 끝은 이번 틱에 비워지므로 충돌 검사에서 제외
-  const ateFood = head.x === food.x && head.y === food.y;
-  if (!ateFood) snake.pop();
-
-  if (isCollision(head)) {
-    gameOver();
-    return;
-  }
-
-  snake.unshift(head);
-
-  if (ateFood) {
-    score += FOOD_SCORE;
-    scoreEl.textContent = String(score);
-    placeFood();
-    updateLevel();
-  }
-
+  spawnFood();
   draw();
 }
 
-// 격자 → 먹이 → 뱀 순으로 캔버스에 그리기
+// 무작위 먹이 생성 (뱀 몸과 겹치지 않게)
+function spawnFood() {
+  let valid = false;
+  while (!valid) {
+    food.x = Math.floor(Math.random() * TILE_COUNT);
+    food.y = Math.floor(Math.random() * TILE_COUNT);
+    
+    // 뱀의 어느 조각과도 겹치지 않는지 검사
+    valid = !snake.some(segment => segment.x === food.x && segment.y === food.y);
+  }
+}
+
+// 게임 시작
+function startGame() {
+  initGame();
+  startOverlay.classList.add('hidden');
+  gameOverOverlay.classList.add('hidden');
+  isRunning = true;
+
+  if (gameInterval) clearInterval(gameInterval);
+  gameInterval = setInterval(gameLoop, GAME_SPEED);
+}
+
+// 게임 루프 (이동, 충돌 검사, 렌더링)
+function gameLoop() {
+  if (!isRunning) return;
+
+  // 방향 업데이트 (180도 반대 이동 방지)
+  dx = nextDx;
+  dy = nextDy;
+
+  // 다음 머리 위치 계산
+  const head = { x: snake[0].x + dx, y: snake[0].y + dy };
+
+  // 1. 벽 충돌 검사 (400x400 범위 벗어남)
+  if (head.x < 0 || head.x >= TILE_COUNT || head.y < 0 || head.y >= TILE_COUNT) {
+    triggerGameOver();
+    return;
+  }
+
+  // 2. 자기 몸 충돌 검사
+  if (snake.some(segment => segment.x === head.x && segment.y === head.y)) {
+    triggerGameOver();
+    return;
+  }
+
+  // 머리를 뱀 제일 앞에 추가
+  snake.unshift(head);
+
+  // 3. 먹이 섭취 검사
+  if (head.x === food.x && head.y === food.y) {
+    score += 10;
+    scoreEl.textContent = score;
+    saveHighScore();
+    spawnFood();
+  } else {
+    // 먹이를 먹지 않았으면 꼬리 하나 자르기 (몸길이 유지)
+    snake.pop();
+  }
+
+  // 화면 렌더링
+  draw();
+}
+
+// 게임 화면 그리기
 function draw() {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // 1. 배경 클리어
+  ctx.fillStyle = '#0b1329';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // 격자선
-  ctx.strokeStyle = getCssVar("--grid");
+  // 2. 배경 격자 무늬 그리기 (은은한 가이드라인)
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
   ctx.lineWidth = 1;
-  for (let i = 1; i < COLS; i++) {
+  for (let i = 0; i <= TILE_COUNT; i++) {
     ctx.beginPath();
-    ctx.moveTo(i * CELL + 0.5, 0);
-    ctx.lineTo(i * CELL + 0.5, canvas.height);
+    ctx.moveTo(i * GRID_SIZE, 0);
+    ctx.lineTo(i * GRID_SIZE, canvas.height);
     ctx.stroke();
-  }
-  for (let i = 1; i < ROWS; i++) {
+
     ctx.beginPath();
-    ctx.moveTo(0, i * CELL + 0.5);
-    ctx.lineTo(canvas.width, i * CELL + 0.5);
+    ctx.moveTo(0, i * GRID_SIZE);
+    ctx.lineTo(canvas.width, i * GRID_SIZE);
     ctx.stroke();
   }
 
-  // 먹이
-  ctx.fillStyle = getCssVar("--food");
+  // 3. 먹이 그리기 (빨간색 동그라미 & 글로우)
+  ctx.shadowColor = '#ef4444';
+  ctx.shadowBlur = 12;
+  ctx.fillStyle = '#ef4444';
   ctx.beginPath();
+  const foodRadius = GRID_SIZE / 2 - 2;
   ctx.arc(
-    food.x * CELL + CELL / 2,
-    food.y * CELL + CELL / 2,
-    CELL / 2 - 3,
+    food.x * GRID_SIZE + GRID_SIZE / 2,
+    food.y * GRID_SIZE + GRID_SIZE / 2,
+    foodRadius,
     0,
     Math.PI * 2
   );
   ctx.fill();
+  ctx.shadowBlur = 0; // 글로우 리셋
 
-  // 뱀 (머리는 진한 색으로 구분)
-  snake.forEach((part, index) => {
-    ctx.fillStyle = index === 0 ? getCssVar("--snake-head") : getCssVar("--snake-body");
-    ctx.fillRect(part.x * CELL + 1, part.y * CELL + 1, CELL - 2, CELL - 2);
+  // 4. 뱀 그리기
+  snake.forEach((segment, index) => {
+    const x = segment.x * GRID_SIZE;
+    const y = segment.y * GRID_SIZE;
+
+    if (index === 0) {
+      // 뱀 머리 (밝은 네온 그린 & 라운드)
+      ctx.fillStyle = '#4ade80';
+      ctx.shadowColor = '#4ade80';
+      ctx.shadowBlur = 10;
+      drawRoundedRect(ctx, x + 1, y + 1, GRID_SIZE - 2, GRID_SIZE - 2, 6);
+      ctx.shadowBlur = 0;
+
+      // 뱀 눈 표현
+      ctx.fillStyle = '#090d16';
+      const eyeSize = 3;
+      if (dx === 1) { // 오른쪽
+        ctx.fillRect(x + 13, y + 5, eyeSize, eyeSize);
+        ctx.fillRect(x + 13, y + 12, eyeSize, eyeSize);
+      } else if (dx === -1) { // 왼쪽
+        ctx.fillRect(x + 4, y + 5, eyeSize, eyeSize);
+        ctx.fillRect(x + 4, y + 12, eyeSize, eyeSize);
+      } else if (dy === -1) { // 위쪽
+        ctx.fillRect(x + 5, y + 4, eyeSize, eyeSize);
+        ctx.fillRect(x + 12, y + 4, eyeSize, eyeSize);
+      } else { // 아래쪽
+        ctx.fillRect(x + 5, y + 13, eyeSize, eyeSize);
+        ctx.fillRect(x + 12, y + 13, eyeSize, eyeSize);
+      }
+    } else {
+      // 뱀 몸통 (에메랄드 그린)
+      ctx.fillStyle = '#22c55e';
+      drawRoundedRect(ctx, x + 2, y + 2, GRID_SIZE - 4, GRID_SIZE - 4, 4);
+    }
   });
 }
 
-function getCssVar(name) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+// 라운드 사각형 헬퍼 함수
+function drawRoundedRect(ctx, x, y, width, height, radius) {
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.lineTo(x + width - radius, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+  ctx.lineTo(x + width, y + height - radius);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+  ctx.lineTo(x + radius, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+  ctx.lineTo(x, y + radius);
+  ctx.quadraticCurveTo(x, y, x + radius, y);
+  ctx.closePath();
+  ctx.fill();
 }
 
-function startGame() {
-  resetGame();
-  draw();
+// 게임 오버 처리
+function triggerGameOver() {
+  isRunning = false;
+  if (gameInterval) clearInterval(gameInterval);
 
-  overlay.classList.add("is-hidden");
-  overlay.classList.remove("is-paused");
-  isPlaying = true;
-  isPaused = false;
-
-  pauseBtn.disabled = false;
-  pauseBtn.textContent = "일시정지";
-  applySpeed();
+  saveHighScore();
+  finalScoreEl.textContent = score;
+  gameOverOverlay.classList.remove('hidden');
 }
 
-// 일시정지 ↔ 재개
-function togglePause() {
-  if (!isPlaying) return;
-
-  isPaused = !isPaused;
-  pauseBtn.textContent = isPaused ? "이어하기" : "일시정지";
-
-  if (isPaused) {
-    overlayTitle.textContent = "일시정지";
-    overlayDesc.textContent = "이어하기를 누르면 계속됩니다.";
-    overlay.classList.add("is-paused");
-    overlay.classList.remove("is-hidden");
-  } else {
-    overlay.classList.add("is-hidden");
-    overlay.classList.remove("is-paused");
+// 키보드 조작 이벤트 (방향키)
+document.addEventListener('keydown', (e) => {
+  // Arrow keys navigation
+  switch (e.key) {
+    case 'ArrowUp':
+      if (dy !== 1) { // 아래로 이동 중이 아닐 때만 위로
+        nextDx = 0;
+        nextDy = -1;
+      }
+      e.preventDefault();
+      break;
+    case 'ArrowDown':
+      if (dy !== -1) { // 위로 이동 중이 아닐 때만 아래로
+        nextDx = 0;
+        nextDy = 1;
+      }
+      e.preventDefault();
+      break;
+    case 'ArrowLeft':
+      if (dx !== 1) { // 오른쪽으로 이동 중이 아닐 때만 왼쪽으로
+        nextDx = -1;
+        nextDy = 0;
+      }
+      e.preventDefault();
+      break;
+    case 'ArrowRight':
+      if (dx !== -1) { // 왼쪽으로 이동 중이 아닐 때만 오른쪽으로
+        nextDx = 1;
+        nextDy = 0;
+      }
+      e.preventDefault();
+      break;
   }
-
-  applySpeed();
-}
-
-function gameOver() {
-  isPlaying = false;
-  isPaused = false;
-  applySpeed();
-
-  pauseBtn.disabled = true;
-  pauseBtn.textContent = "일시정지";
-
-  const isNewBest = score > bestScore;
-  if (isNewBest) {
-    bestScore = score;
-    bestScoreEl.textContent = String(bestScore);
-    saveBestScore(bestScore);
-  }
-
-  overlayTitle.textContent = "게임 오버!";
-  overlayDesc.textContent = isNewBest
-    ? `신기록 달성! 최종 점수 ${score}점 (레벨 ${level})`
-    : `최종 점수 ${score}점 (레벨 ${level})`;
-  startBtn.textContent = "다시 시작";
-  overlay.classList.remove("is-paused");
-  overlay.classList.remove("is-hidden");
-}
-
-// 방향키 입력 처리 (정반대 방향은 무시)
-document.addEventListener("keydown", (event) => {
-  const next = DIRECTIONS[event.key];
-  if (!next) return;
-
-  event.preventDefault();
-  if (!isPlaying || isPaused) return;
-
-  const isReverse = next.x === -direction.x && next.y === -direction.y;
-  if (isReverse) return;
-
-  pendingDirection = next;
 });
 
-startBtn.addEventListener("click", startGame);
-pauseBtn.addEventListener("click", togglePause);
+// 버튼 이벤트 바인딩
+startBtn.addEventListener('click', startGame);
+restartBtn.addEventListener('click', startGame);
 
-// 난이도를 바꾸면 진행 중인 게임에도 즉시 반영
-difficultySelect.addEventListener("change", () => {
-  applySpeed();
-  difficultySelect.blur();   // 이후 방향키 입력이 드롭다운에 먹히지 않도록
+// 페이지 로드 초기화
+document.addEventListener('DOMContentLoaded', () => {
+  loadHighScore();
+  initGame();
 });
-
-// 첫 로드: 최고 점수 표시 + 시작 화면 렌더
-bestScore = loadBestScore();
-bestScoreEl.textContent = String(bestScore);
-resetGame();
-draw();
